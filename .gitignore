@@ -1,0 +1,13 @@
+.env
+.env.*
+.venv/
+.cache/
+.tools/
+output/
+recordings/
+__pycache__/
+*.py[cod]
+.DS_Store
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo

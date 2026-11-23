@@ -1,0 +1,4 @@
+interface:
+  display_name: "Chinese Subtitles"
+  short_description: "Review Mandarin recordings and publish Chinese subtitles"
+  default_prompt: "Use $chinese-subtitles to run or review this Subtitle Studio job."
