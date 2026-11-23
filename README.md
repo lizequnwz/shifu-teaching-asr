@@ -4,14 +4,18 @@ Upload a Mandarin recording, review passages against the original audio, and pub
 
 | Mode | Files and work | Speech API keys |
 | --- | --- | --- |
-| **Local** | The app runs on an Apple Silicon Mac. Its recordings, drafts, and published files stay in the local job directory. | Use your own keys. Audio clips are sent to Gemini and OpenAI. |
+| **Local** | The app runs on your computer. Its recordings, drafts, and published files stay in the local job directory. | Use your own keys. Audio clips are sent to Gemini and OpenAI. |
 | **Online** | The app runs in a browser. Sign in to upload and review recordings in your private workspace. | The site operator supplies the keys and pays for calls within site and account limits. |
 
 Both modes use the same transcription, review, and publication logic. They require no local speech-model downloads. This release processes recorded Mandarin audio and publishes the Chinese version.
 
+Transcription uses Gemini and OpenAI APIs exclusively. There is no MLX, Qwen, Whisper, PyTorch, Hugging Face, or local forced-alignment runtime. FFmpeg handles audio decoding and clipping; WebRTC VAD checks speech coverage and helps choose clip boundaries. OpenCC normalizes Chinese text. These lightweight processing dependencies remain necessary for the API workflow.
+
 ## Run locally
 
 Install FFmpeg, Python 3.12, Node.js 22 or newer, and uv. From the checkout root:
+
+Use a fresh virtual environment when upgrading from the former local-model setup. Install only the requirements below; no model checkout or model cache is needed. Node.js is needed to build the frontend, not to run the built app.
 
 ```sh
 uv venv --python 3.12 .venv
@@ -31,7 +35,9 @@ Open [the local workspace](http://127.0.0.1:8765/). It accepts recordings up to 
 
 ## Review and publish
 
-Use the filters to find wording, speech coverage, timing, and cut-boundary issues. Play the original audio, accept a reading or correct it, and mark inaudible or speech-free sections when you have listened. The time editor starts with existing cues and accepts the playhead position. Edits without reliable timing stay in review until their cue boundaries are set. Once the review is clear, use **Publish Chinese subtitles** to create the download revision. Further edits start a new draft.
+Use the filters to find wording, speech coverage, timing, and cut-boundary issues. Accept or correct the wording, then replay and confirm each pending coverage or boundary issue. **Confirm after listening** records your decision for that issue. Use the whole-passage actions when the entire passage is inaudible or contains no speech.
+
+The cue editor keeps timestamps for unchanged cues and pre-fills a time range for changed cues when it can. Review the cues marked **Check timing** and set their boundaries with the playhead. The exported SRT uses the media timeline, including silence before a video's audio track starts. Once the review is clear, use **Publish Chinese subtitles** to create the download revision. Further edits start a new draft.
 
 For command-line and batch jobs:
 
@@ -39,12 +45,15 @@ For command-line and batch jobs:
 .venv/bin/python scripts/subtitle_workflow.py run 'recordings/your-recording.m4a' --seconds 480 --terms 'glossary.txt'
 .venv/bin/python scripts/subtitle_workflow.py resume 'output/jobs/JOB'
 .venv/bin/python scripts/subtitle_workflow.py decide 'output/jobs/JOB' PASSAGE_ID suggestion
+.venv/bin/python scripts/subtitle_workflow.py decide 'output/jobs/JOB' PASSAGE_ID --resolve-issue ISSUE_ID
 .venv/bin/python scripts/subtitle_workflow.py publish 'output/jobs/JOB'
 ```
 
 Omit `--seconds` for the full recording. A reviewable draft is a successful processing result. Check the returned `status` and `published_transcript` or `published_subtitles` fields when automating final delivery. If a provider charge is uncertain, the original reservation stays in the ledger. To deliberately resubmit, use the browser retry action or the exact recorded request ID with `resume JOB --retry-request ID`. The CLI accepts `--budget` for the local estimated allowance.
 
-For batch ingestion, run `scripts/subtitle_workflow.py batch MANIFEST.jsonl`. Each JSON line contains an `audio` path and can include `terms`, `seconds`, and `budget`. Paths are relative to the manifest.
+Read passage and issue IDs from the current draft's `review.json`. For batch ingestion, run `scripts/subtitle_workflow.py batch MANIFEST.jsonl`. Each JSON line contains an `audio` path and can include `terms`, `seconds`, `budget`, `core_seconds`, `context`, and `comparison`. Paths are relative to the manifest.
+
+The default compares both providers on every window. Their calls can run together, and the completed reading is checkpointed if its peer pauses. Try `--window-seconds 90` to compare chunk lengths on the same audio. Use `--context '普通话佛学开示，引用金刚经。'` to test topic context for OpenAI along with your glossary. The experimental `--comparison targeted` checks windows with potential gaps, seam or timing issues, glossary hits, and about 10% of the remaining windows. Review the reported comparison window count and audio seconds along with accuracy when comparing runs.
 
 ## Deploy Online
 
@@ -68,6 +77,10 @@ Enter credentials in the Render and Supabase dashboards. Keep passwords, API key
 
 For a pilot without hosting charges, create only a **Free Docker Web Service** in Render using this repository. Use `/health` for its health check and set the shared configuration on the service. Run `scripts/online_worker.py` with the local Python environment and the same settings on your Mac. The worker can read the speech keys from the local `.env`. Jobs stay queued when the Mac is offline. Speech API usage is billed separately.
 
+Deployment to-do
+
+- [ ] Move the transcription worker to an always-on remote host and verify a full transcription with the Mac off.
+
 ## Verify and measure release quality
 
 ```sh
@@ -87,4 +100,4 @@ Use authorized Mandarin recordings. Prepare at least 30 minutes of representativ
   --terms glossary.txt --check
 ```
 
-The check reports normalized Chinese character error rate and P95 start/end error on uniquely matched cue text. It also reports unmatched cues and glossary count differences. Read unresolved matches against the audio and record missed speech and reviewer time separately. The clear-speech targets are at most 2% character error rate and at most 750 ms P95 cue-boundary error after review.
+The evaluator scores normalized Chinese character error rate and P95 start/end error at shared boundaries in the aligned reference and candidate text. It supports repeated cues in sequence and small groups of split or merged cues. The report includes coverage by cue count and duration, reference cue time without a candidate cue, and glossary precision and recall by timed occurrence. Listen to uncovered intervals to verify how much speech was missed. Pass `--audio-minutes` and `--review-minutes` to report active reviewer minutes per audio hour. Use `--text-only` with the two TXT files to compare raw drafts before timing. The clear-speech targets are at most 2% character error rate and at most 750 ms P95 cue-boundary error after review.

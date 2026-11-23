@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import subtitle_web as web
 import subtitle_workflow as engine
 from test_subtitle_workflow import Gemini, OpenAI, write_wav
+from workflow_audio import Recording, SAMPLE_RATE
 
 
 class StudioTests(TestCase):
@@ -112,3 +113,22 @@ class StudioTests(TestCase):
         self.assertEqual(self._upload(headers).status_code, 403)
         self.assertEqual(self.client.get("/api/jobs").json()["jobs"], [])
         self.assertEqual(self.client.get("/api/jobs", params={"cursor": "next"}).status_code, 400)
+
+    def test_coverage_confirmation_keeps_the_wording_issue_open(self):
+        write_wav(self.recording, 5)
+        with patch.object(Recording, "speech", return_value=[(3 * SAMPLE_RATE, 5 * SAMPLE_RATE)]):
+            job_id = self._upload(self.token).json()["id"]
+            detail = self._wait_for_review(job_id)
+        path = f"/api/jobs/{job_id}"
+        passage, = self.client.get(path + "/passages").json()["passages"]
+        coverage, = [issue for issue in passage["issues"] if issue["category"] == "coverage"]
+        url = path + f"/decisions/{passage['id']}"
+        confirmation = {"resolved_issues": [coverage["id"]], "revision": detail["revision"]}
+        response = self.client.put(url, headers=self.token, json=confirmation)
+        self.assertEqual(response.status_code, 200, response.text)
+        view = response.json()
+        self.assertEqual(view["job"]["status"], "needs_review")
+        self.assertEqual([issue["reason"] for issue in view["passage"]["issues"]], ["negation"])
+        response = self.client.put(url, headers=self.token, json={"choice": "gemini", "revision": view["job"]["revision"]})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["job"]["status"], "ready_to_publish")

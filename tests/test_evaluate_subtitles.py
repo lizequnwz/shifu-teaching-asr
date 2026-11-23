@@ -49,15 +49,46 @@ class SubtitleEvaluationTests(TestCase):
         self.assertTrue(report["passes_checks"])
         self.assertEqual(report["timing"]["start_error_p95_ms"], 0)
 
-    def test_repeated_cues_are_not_timing_matches(self):
+    def test_repeated_cues_match_in_recording_order(self):
         cues = [(1, 0, 900, "阿弥陀佛。"), (2, 1000, 1900, "阿弥陀佛。"), (3, 2000, 3000, "下面开始。")]
         report = evaluate(*self.fixture("gold", cues), *self.fixture("actual", cues))
         timing = report["timing"]
-        self.assertEqual(timing["matched_cues"], 1)
-        self.assertEqual([cue["id"] for cue in timing["unmatched_reference_cues"]], [1, 2])
+        self.assertEqual(timing["matched_cues"], 3)
+        self.assertEqual(timing["unmatched_reference_cues"], [])
         self.assertEqual(timing["start_error_p95_ms"], 0)
-        self.assertFalse(report["checks"]["cue_coverage"])
-        self.assertFalse(report["passes_checks"])
+        self.assertTrue(report["passes_checks"])
+
+    def test_cue_split_scores_shared_boundaries_and_review_time(self):
+        reference = self.fixture("gold", [(1, 0, 2000, "甲乙丙丁")])
+        candidate = self.fixture("actual", [(1, 100, 1000, "甲乙"), (2, 1100, 2100, "丙丁")])
+        report = evaluate(*reference, *candidate, audio_minutes=30, review_minutes=8)
+        self.assertTrue(report["passes_checks"])
+        self.assertEqual(report["timing"]["matched_candidate_cues"], 2)
+        self.assertEqual(report["timing"]["start_error_p95_ms"], 100)
+        self.assertEqual(report["timing"]["end_error_p95_ms"], 100)
+        self.assertEqual(report["timing"]["reference_duration_match_fraction"], 1)
+        self.assertEqual(report["timing"]["reference_cue_ms_without_candidate"], 200)
+        self.assertEqual(report["review_effort"]["minutes_per_audio_hour"], 16)
+
+    def test_detects_equal_count_term_in_the_wrong_passage(self):
+        reference = self.fixture("gold", [(1, 0, 900, "先讲正法"), (2, 3500, 4400, "再讲戒律")])
+        candidate = self.fixture("actual", [(1, 0, 900, "先讲戒律"), (2, 3500, 4400, "再讲正法")])
+        report = evaluate(*reference, *candidate, terms=["正法"])
+        self.assertTrue(report["checks"]["term_counts"])
+        self.assertFalse(report["checks"]["term_occurrences"])
+        term, = report["term_occurrences"]["by_term"]
+        self.assertEqual([item["first_cue"] for item in term["missed"]], [1])
+        self.assertEqual([item["first_cue"] for item in term["extra"]], [2])
+
+    def test_scores_a_raw_text_candidate(self):
+        reference, _ = self.fixture("gold", [(1, 0, 900, "正法")])
+        candidate, _ = self.fixture("actual", [(1, 0, 900, "正法")])
+        with redirect_stdout(io.StringIO()) as result:
+            self.assertEqual(main(["--reference-txt", str(reference), "--candidate-txt", str(candidate),
+                                   "--text-only", "--check"]), 0)
+        report = json.loads(result.getvalue())
+        self.assertIsNone(report["timing"])
+        self.assertTrue(report["passes_checks"])
 
     def test_reports_character_edits_and_term_locations(self):
         reference = self.fixture("gold", [(1, 200, 1600, "師父講三皈依。")])

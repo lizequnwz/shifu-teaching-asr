@@ -260,7 +260,9 @@ def _passages(job):
 
 
 def _passage_view(passage):
-    return {**passage, "clips": [
+    from workflow_pipeline import identify_issues
+
+    return {**passage, "issues": identify_issues(passage["issues"]), "clips": [
         {"id": Path(clip["path"]).name, "start_seconds": clip["start_seconds"], "end_seconds": clip["end_seconds"]}
         for clip in passage["clips"]
     ]}
@@ -312,11 +314,11 @@ async def _body(request, allowed):
 @app.put("/api/jobs/{job_id}/decisions/{passage_id}")
 async def decide(job_id: str, passage_id: str, request: Request):
     job = _job(job_id)
-    body = await _body(request, {"choice", "text", "timings", "revision"})
+    body = await _body(request, {"choice", "text", "timings", "revision", "resolved_issues"})
     try:
         draft = await asyncio.to_thread(
             engine.save_review_decision, job, passage_id, body.get("choice"), body.get("text"),
-            body.get("revision"), body.get("timings"),
+            body.get("revision"), body.get("timings"), resolved_issues=body.get("resolved_issues"),
         )
     except (engine.DecisionConflict, engine.WorkflowBusy) as exc:
         raise HTTPException(409, str(exc)) from exc

@@ -15,6 +15,8 @@ import wave
 SAMPLE_RATE = 16_000
 MAX_SECONDS = 120 * 60
 MAX_BYTES = 512 * 1024 * 1024
+DEFAULT_CORE_SECONDS = 180
+MIN_CORE_SECONDS = 30
 AUDIO_SUFFIXES = frozenset({
     ".m4a", ".mp3", ".wav", ".flac", ".aac", ".mp4", ".mov", ".webm", ".ogg", ".aiff", ".aif", ".opus",
 })
@@ -23,7 +25,6 @@ _FORMAT_OPTIONS = [
     "-format_whitelist", "mov,mp4,m4a,3gp,3g2,mj2,mp3,wav,flac,aac,matroska,webm,ogg,aiff",
 ]
 _FRAME_SAMPLES = 480  # WebRTC VAD uses fixed 30 ms frames at 16 kHz.
-_CORE_SAMPLES = 180 * SAMPLE_RATE
 _CONTEXT_SAMPLES = 5 * SAMPLE_RATE
 
 
@@ -107,18 +108,23 @@ def probe(source: Path) -> float | None:
 
 
 @contextmanager
-def decode(source: Path, scratch: Path, *, limit_seconds: float | None = None):
+def decode(source: Path, scratch: Path, *, limit_seconds: float | None = None, media_clock=True):
     probe(source)
     if limit_seconds is not None and not 0 < limit_seconds <= MAX_SECONDS:
         raise ValueError("The pilot length must be between 0 and 120 minutes")
     limit = MAX_SECONDS + 1 if limit_seconds is None else limit_seconds
+    # Raw PCM has no timestamps. Fill the leading gap on the media timeline
+    # so clip offsets and the exported cues still share the same clock.
+    clock_options = ["-copyts", "-start_at_zero"] if media_clock else []
+    time_filter = ["-af", f"aresample={SAMPLE_RATE}:async=1:first_pts=0"] if media_clock else []
     scratch.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.TemporaryDirectory(prefix="audio-", dir=scratch) as directory:
         pcm = Path(directory) / "recording.pcm"
         try:
             subprocess.run(
-                ["ffmpeg", "-nostdin", "-v", "error", *_FORMAT_OPTIONS, "-i", str(source.resolve()),
-                 "-map", "0:a:0", "-threads", "1", "-t", str(limit), "-ar", str(SAMPLE_RATE),
+                ["ffmpeg", "-nostdin", "-v", "error", *_FORMAT_OPTIONS, *clock_options,
+                 "-i", str(source.resolve()), "-map", "0:a:0", "-threads", "1", "-t", str(limit),
+                 *time_filter, "-ar", str(SAMPLE_RATE),
                  "-ac", "1", "-c:a", "pcm_s16le", "-f", "s16le", str(pcm)],
                 check=True, capture_output=True, timeout=180,
             )
@@ -130,15 +136,18 @@ def decode(source: Path, scratch: Path, *, limit_seconds: float | None = None):
         yield Recording(pcm, samples)
 
 
-def windows(samples: int, speech: list[tuple[int, int]]) -> list[Window]:
+def windows(samples: int, speech: list[tuple[int, int]], *, core_seconds=DEFAULT_CORE_SECONDS) -> list[Window]:
     """Prefer a verified pause near each nominal cut, keeping unique core ownership."""
+    if type(core_seconds) is not int or not MIN_CORE_SECONDS <= core_seconds <= DEFAULT_CORE_SECONDS:
+        raise ValueError(f"Window length must be between {MIN_CORE_SECONDS} and {DEFAULT_CORE_SECONDS} seconds")
+    core_samples = core_seconds * SAMPLE_RATE
     pauses = [(0, speech[0][0])] if speech else []
     pauses.extend((end, next_start) for (_, end), (next_start, _) in zip(speech, speech[1:]))
     if speech:
         pauses.append((speech[-1][1], samples))
     boundaries = [0]
-    while boundaries[-1] + _CORE_SAMPLES + _CONTEXT_SAMPLES < samples:
-        desired = boundaries[-1] + _CORE_SAMPLES
+    while boundaries[-1] + core_samples + _CONTEXT_SAMPLES < samples:
+        desired = boundaries[-1] + core_samples
         candidates = [
             min(max(desired, start + _FRAME_SAMPLES), end - _FRAME_SAMPLES)
             for start, end in pauses

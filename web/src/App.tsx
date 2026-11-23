@@ -12,7 +12,8 @@ const errorMessage = (problem: unknown) => problem instanceof Error ? problem.me
 const active = (job: Job) => job.status === 'queued' || job.status === 'processing'
 const stageKeys: Record<string, Key> = {
   preflight: 'probe', probe: 'probe', audio_preflight: 'probe', prepare: 'prepare', decode: 'decode',
-  transcribe: 'transcribe', cloud_draft: 'transcribe', reconcile: 'reconcile', review: 'review_stage',
+  transcribe: 'transcribe', cloud_draft: 'transcribe', cloud_comparison: 'comparison_stage',
+  reconcile: 'reconcile', review: 'review_stage', review_draft: 'review_stage',
   preparing_review: 'review_stage',
 }
 const shortClock = (seconds: number) => clock(seconds).split('.')[0]

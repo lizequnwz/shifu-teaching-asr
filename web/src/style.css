@@ -292,6 +292,7 @@ button[aria-pressed="true"] { border-color: var(--brand); background: var(--acce
 .review-note li { display: flex; align-items: center; justify-content: space-between; gap: .4rem .65rem; padding-block: .3rem; }
 .review-note li + li { border-top: 1px solid #e9d8a9; }
 .issue-copy { min-width: 0; overflow-wrap: anywhere; }
+.issue-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .35rem; }
 .review-note .issue-replay { min-height: 2rem; flex: none; padding: .25rem .45rem; font-size: .8rem; }
 .player { padding: .65rem .75rem; border: 1px solid var(--line); background: var(--soft); border-radius: 10px; }
 .wave-head, .player-controls, .transport, .player-settings { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; }
@@ -366,7 +367,7 @@ button[aria-pressed="true"] { border-color: var(--brand); background: var(--acce
   .rail-filter button, .review-note .issue-replay, .whole-passage-actions > summary, .timing-fields input { min-height: 2.75rem; }
   .review-note li { flex-wrap: wrap; }
   .issue-copy { flex: 1 1 9rem; }
-  .review-note .issue-replay { margin-inline-start: auto; }
+  .issue-actions { margin-inline-start: auto; }
   .editor-actions .button { flex: 1 1 auto; }
 }
 @media (max-width: 660px) {

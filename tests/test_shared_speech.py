@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import subtitle_export
+from workflow_audio import SAMPLE_RATE, decode
 import workflow_gemini
 import workflow_openai
 
@@ -87,13 +89,33 @@ class ProviderTests(TestCase):
         ledger = RecordingLedger({"text": "  师父好。 "})
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            client = workflow_openai.OpenAIClient(root, 1.0, vocabulary=["师父"], ledger=ledger)
+            client = workflow_openai.OpenAIClient(
+                root, 1.0, vocabulary=["师父"], ledger=ledger, context="普通话佛学开示，引用金刚经。",
+            )
             self.assertEqual(client.transcribe(_clip(root / "clip.wav")), "师父好。")
         send = Mock()
         ledger.send(SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=send))))
         self.assertEqual(send.call_args.kwargs["languages"], ["zh-cn"])
         self.assertEqual(send.call_args.kwargs["keywords"], ["师父"])
+        self.assertEqual(send.call_args.kwargs["prompt"], "普通话佛学开示，引用金刚经。")
         self.assertNotIn("timestamp_granularities", send.call_args.kwargs)
+
+
+class MediaClockTests(TestCase):
+    def test_video_keeps_silence_before_the_first_audio_stream_timestamp(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / "offset.mp4"
+            subprocess.run([
+                "ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=32x32:r=10:d=4",
+                "-itsoffset", "2", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                "-c:v", "mpeg4", "-c:a", "aac", str(video),
+            ], check=True, capture_output=True)
+            with decode(video, root) as recording:
+                audio = recording.pcm.read_bytes()
+                self.assertGreater(recording.samples, int(2.8 * SAMPLE_RATE))
+                self.assertFalse(any(audio[:3 * SAMPLE_RATE]))
+                self.assertTrue(any(audio[4 * SAMPLE_RATE:]))
 
 
 class SubtitleExportTests(TestCase):

@@ -17,9 +17,10 @@ def _api_key() -> str:
 
 class OpenAIClient:
     def __init__(self, job: Path, budget_usd: float, *, vocabulary: list[str] | None = None,
-                 ledger: CloudLedger | None = None):
+                 ledger: CloudLedger | None = None, context: str | None = None):
         self.ledger = ledger if ledger is not None else CloudLedger(job, budget_usd)
         self.vocabulary = list(vocabulary or [])
+        self.prompt = context or _VERBATIM_CHINESE
         if any(not isinstance(word, str) or not word.strip() or any(char in word for char in "<>\r\n")
                for word in self.vocabulary):
             raise ValueError("OpenAI vocabulary requires nonempty lines without angle brackets")
@@ -47,12 +48,12 @@ class OpenAIClient:
             context["keywords"] = self.vocabulary
         audit = {"endpoint": "/v1/audio/transcriptions", "audio_sha256": digest(data),
                  "audio_bytes": len(data), "duration_seconds": duration, "context": context,
-                 "prompt_sha256": digest(_VERBATIM_CHINESE.encode("utf-8"))}
+                 "prompt_sha256": digest(self.prompt.encode("utf-8"))}
         estimated = duration * _TRANSCRIBE_RATE / 60
 
         def send(sdk):
             return sdk.audio.transcriptions.create(model=TRANSCRIBE_MODEL, file=("clip.wav", data, "audio/wav"),
-                                                   prompt=_VERBATIM_CHINESE, response_format="json", **context)
+                                                   prompt=self.prompt, response_format="json", **context)
 
         def read(response, raw):
             text = raw.get("text")

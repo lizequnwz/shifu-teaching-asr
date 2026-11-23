@@ -48,9 +48,10 @@ class TimingInput(Input):
 
 
 class DecisionRequest(RevisionRequest):
-    choice: Literal["gemini", "openai", "suggestion", "edited", "inaudible", "no_speech"]
+    choice: Literal["gemini", "openai", "suggestion", "edited", "inaudible", "no_speech"] | None = None
     text: str | None = Field(default=None, max_length=24_000)
     timings: list[TimingInput] | None = Field(default=None, max_length=100)
+    resolved_issues: list[str] | None = Field(default=None, max_length=100)
 
 
 class ResumeRequest(Input):
@@ -81,9 +82,11 @@ def _clip_id(clip):
 
 
 def _passage_view(passage):
+    from workflow_pipeline import identify_issues
+
     clips = [{"id": _clip_id(clip), "start_seconds": clip["start_seconds"], "end_seconds": clip["end_seconds"]}
              for clip in passage["clips"]]
-    return {**passage, "clips": clips}
+    return {**passage, "clips": clips, "issues": identify_issues(passage["issues"])}
 
 
 def _upload_fields(body):
@@ -240,7 +243,10 @@ def create_app(settings=None, *, store=None, supabase=None):
             raise JobError(404, "Passage not found.")
         timings = [cue.model_dump() for cue in body.timings] if body.timings is not None else None
         try:
-            decision = validate_decision(job["data"], passage_id, body.choice, body.text, timings)
+            decision = validate_decision(
+                job["data"], passage_id, body.choice, body.text, timings,
+                previous=job["decisions"].get(passage_id), resolved_issues=body.resolved_issues,
+            )
         except ValueError as exc:
             raise JobError(400, str(exc)) from None
         decisions = {**job["decisions"], passage_id: decision}

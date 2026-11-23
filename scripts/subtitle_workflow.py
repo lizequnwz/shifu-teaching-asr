@@ -16,8 +16,10 @@ import sys
 import tempfile
 from uuid import uuid4
 
-from workflow_audio import AUDIO_SUFFIXES, MAX_BYTES, MAX_SECONDS, SAMPLE_RATE
-from workflow_pipeline import CHOICES, PIPELINE_VERSION, build_review, transcribe, validate_decision
+from workflow_audio import AUDIO_SUFFIXES, DEFAULT_CORE_SECONDS, MAX_BYTES, MAX_SECONDS, MIN_CORE_SECONDS, SAMPLE_RATE
+from workflow_pipeline import (
+    CHOICES, LEGACY_PIPELINE_VERSION, PIPELINE_VERSION, build_review, transcribe, validate_decision,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -146,7 +148,8 @@ def normalize_vocabulary(vocabulary):
     return result
 
 
-def make_manifest(source, *, seconds=None, terms=None, vocabulary=None):
+def make_manifest(source, *, seconds=None, terms=None, vocabulary=None, core_seconds=None, context=None,
+                  comparison=None):
     source = Path(source).resolve(strict=True)
     if not source.is_file() or source.suffix.lower() not in AUDIO_SUFFIXES or not 0 < source.stat().st_size <= MAX_BYTES:
         raise ValueError("Choose a supported, nonempty recording up to 512 MiB")
@@ -161,15 +164,28 @@ def make_manifest(source, *, seconds=None, terms=None, vocabulary=None):
         if terms.stat().st_size > 100_000:
             raise ValueError("The glossary exceeds 100 KB")
         vocabulary = terms.read_text("utf-8-sig").splitlines()
-    return {
+    manifest = {
         "version": VERSION, "mode": "audio", "source": str(source), "source_sha256": digest(source),
         "limit_seconds": seconds, "vocabulary": normalize_vocabulary(vocabulary if vocabulary is not None else []),
         "pipeline": PIPELINE_VERSION, "models": model_versions(),
     }
+    if core_seconds is not None:
+        if type(core_seconds) is not int or not MIN_CORE_SECONDS <= core_seconds <= DEFAULT_CORE_SECONDS:
+            raise ValueError(f"Window length must be between {MIN_CORE_SECONDS} and {DEFAULT_CORE_SECONDS} seconds")
+        manifest["core_seconds"] = core_seconds
+    if context is not None:
+        if not isinstance(context, str) or not context.strip() or len(context) > 500 or "\x00" in context:
+            raise ValueError("Provide brief recording context of up to 500 characters")
+        manifest["context"] = context.strip()
+    if comparison is not None:
+        if comparison not in ("full", "targeted"):
+            raise ValueError("Comparison must be full or targeted")
+        manifest["comparison"] = comparison
+    return manifest
 
 
 def _validate_job(manifest, job):
-    if (manifest.get("version") != VERSION or manifest.get("pipeline") != PIPELINE_VERSION
+    if (manifest.get("version") != VERSION or manifest.get("pipeline") not in {PIPELINE_VERSION, LEGACY_PIPELINE_VERSION}
             or manifest.get("models") != model_versions() or manifest.get("mode") != "audio"):
         raise ValueError("Start a new job with this version of Subtitle Studio")
     source = Path(manifest["source"])
@@ -246,7 +262,7 @@ def _new_draft(job, data, decisions):
     return directory
 
 
-def save_review_decision(job, passage_id, choice, text, revision, timings=None):
+def save_review_decision(job, passage_id, choice, text, revision, timings=None, *, resolved_issues=None):
     with job_lock(job):
         draft = current_draft(job)
         decisions = read_json(draft / "decisions.json") if draft is not None else {}
@@ -256,7 +272,8 @@ def save_review_decision(job, passage_id, choice, text, revision, timings=None):
         if not data_path.is_file() or draft is None:
             raise ValueError("The Chinese draft is not ready")
         data = read_json(data_path)
-        changed = validate_decision(data, passage_id, choice, text, timings)
+        changed = validate_decision(data, passage_id, choice, text, timings,
+                                    previous=decisions.get(passage_id), resolved_issues=resolved_issues)
         if decisions.get(passage_id) != changed:
             decisions[passage_id] = changed
             draft = _new_draft(job, data, decisions)
@@ -323,7 +340,8 @@ def _process_job(job, manifest, operation, budget, retry_request):
         ledger = CloudLedger(job, budget, retry_request=retry_request)
         try:
             gemini = GeminiClient(job, budget, ledger=ledger)
-            openai = OpenAIClient(job, budget, vocabulary=manifest["vocabulary"], ledger=ledger)
+            context = {"context": manifest["context"]} if "context" in manifest else {}
+            openai = OpenAIClient(job, budget, vocabulary=manifest["vocabulary"], ledger=ledger, **context)
             data = transcribe(Path(manifest["source"]), job, manifest, gemini, openai, operation)
             write_json(cached, data)
         finally:
@@ -379,10 +397,13 @@ def batch(path):
             continue
         try:
             row = json.loads(line)
-            if not isinstance(row, dict) or set(row) - {"audio", "terms", "seconds", "budget"} or "audio" not in row:
-                raise ValueError("Each row needs an audio path and may include terms, seconds, and budget")
+            if (not isinstance(row, dict) or "audio" not in row
+                    or set(row) - {"audio", "terms", "seconds", "budget", "core_seconds", "context", "comparison"}):
+                raise ValueError("Each row needs an audio path and may specify the recording and comparison options")
             manifest = make_manifest(base / row["audio"], terms=base / row["terms"] if "terms" in row else None,
-                                     seconds=positive(row["seconds"]) if "seconds" in row else None)
+                                     seconds=positive(row["seconds"]) if "seconds" in row else None,
+                                     core_seconds=row.get("core_seconds"), context=row.get("context"),
+                                     comparison=row.get("comparison"))
             result, _ = execute(_default_job(manifest), manifest, kind="batch",
                                 budget=positive(row["budget"]) if "budget" in row else None)
         except (OSError, ValueError, TypeError, argparse.ArgumentTypeError) as exc:
@@ -406,6 +427,10 @@ def main(argv=None):
     run.add_argument("--job", type=Path)
     run.add_argument("--seconds", type=positive, help="prepare a pilot from the first seconds of audio")
     run.add_argument("--terms", type=Path, help="UTF-8 glossary with one confirmed term per line")
+    run.add_argument("--window-seconds", type=int, help="target window length for comparison experiments")
+    run.add_argument("--context", help="brief recording context for OpenAI transcription")
+    run.add_argument("--comparison", choices=("full", "targeted"),
+                     help="compare every window by default or test a targeted second pass")
     _add_run_options(run)
     resume = commands.add_parser("resume", help="continue an interrupted job")
     resume.add_argument("job", type=Path)
@@ -415,7 +440,8 @@ def main(argv=None):
     decide = commands.add_parser("decide", help="save one Chinese review decision")
     decide.add_argument("job", type=Path)
     decide.add_argument("passage_id")
-    decide.add_argument("choice", choices=CHOICES)
+    decide.add_argument("choice", nargs="?", choices=CHOICES)
+    decide.add_argument("--resolve-issue", action="append", help="confirm this coverage or boundary issue after listening")
     wording = decide.add_mutually_exclusive_group()
     wording.add_argument("--text", help="complete corrected wording")
     wording.add_argument("--text-stdin", action="store_true", help="read complete corrected wording from stdin")
@@ -432,7 +458,8 @@ def main(argv=None):
     elif args.command == "batch":
         result, status = batch(args.manifest)
     elif args.command == "run":
-        manifest = make_manifest(args.recording, seconds=args.seconds, terms=args.terms)
+        manifest = make_manifest(args.recording, seconds=args.seconds, terms=args.terms,
+                                 core_seconds=args.window_seconds, context=args.context, comparison=args.comparison)
         job = (args.job or _default_job(manifest)).resolve()
         result, status = execute(job, manifest, kind="run", budget=args.budget, retry_request=args.retry_request)
     else:
@@ -443,7 +470,8 @@ def main(argv=None):
         elif args.command == "decide":
             text = sys.stdin.read(24_001) if args.text_stdin else args.text
             timing = read_json(args.timings) if args.timings else None
-            save_review_decision(job, args.passage_id, args.choice, text, decision_revision(job), timing)
+            save_review_decision(job, args.passage_id, args.choice, text, decision_revision(job), timing,
+                                 resolved_issues=args.resolve_issue)
             result = _result(job)
         else:
             publish(job, decision_revision(job))

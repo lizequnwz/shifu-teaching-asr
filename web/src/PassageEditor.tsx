@@ -3,13 +3,13 @@ import { Check, ChevronRight, Clock3, Play, Plus } from 'lucide-react'
 import Player, { clock, type PlaybackRange, type ReplayRequest } from './Player'
 import {
   ApiError, api, sources, type Choice, type Issue, type Job, type Passage,
-  type PlayableClip, type SavedReview, type Timing,
+  type PlayableClip, type SavedReview, type Timing, type TimingTemplate,
 } from './api'
 import { issueDescription, type Translate } from './i18n'
 
 const exactMs = (seconds: number) => Number((seconds * 1000).toFixed(7))
 const sampleRate = 16_000
-type CueInput = { id: number; text: string; start: string; end: string }
+type CueInput = { id: number; text: string; start: string; end: string; needsConfirmation?: boolean }
 
 function issueRange(issue: Issue, clip: PlaybackRange): PlaybackRange | undefined {
   if (issue.start_sample === undefined || issue.end_sample === undefined) return
@@ -108,14 +108,25 @@ export default function PassageEditor({ job, item, compact, speed, onSpeedChange
     setTiming(null)
     setError('')
   }
-  function openTiming() {
-    const saved = item.timings?.length ? item.timings : priorTimings.current
-    const cues = wording === item.selected_text && item.timings?.length ? item.timings :
-      saved.length === 1 ? [{ ...saved[0], text: wording }] : []
+  function showTiming(text: string, cues: Timing[] | TimingTemplate[]) {
     setTiming(cues.length ? cues.map((cue) => ({
       id: nextCue.current++, text: cue.text,
-      start: (cue.start_ms / 1000).toFixed(3), end: (cue.end_ms / 1000).toFixed(3),
-    })) : [{ id: nextCue.current++, text: wording, start: '', end: '' }])
+      start: cue.start_ms === null ? '' : (cue.start_ms / 1000).toFixed(3),
+      end: cue.end_ms === null ? '' : (cue.end_ms / 1000).toFixed(3),
+      needsConfirmation: 'needs_confirmation' in cue && cue.needs_confirmation,
+    })) : [{ id: nextCue.current++, text, start: '', end: '' }])
+  }
+  function openTiming() {
+    const saved = item.timings?.length ? item.timings : priorTimings.current
+    if (wording !== item.selected_text && (saved.length > 1 || item.timing_template?.length)) {
+      void save(false, true)
+      return
+    }
+    if (wording === item.selected_text) {
+      showTiming(wording, item.timing_template?.length ? item.timing_template : item.timings ?? [])
+    } else {
+      showTiming(wording, saved.length === 1 ? [{ ...saved[0], text: wording }] : [])
+    }
   }
   function replayRange(range: PlaybackRange) {
     setReplay({ ...range, id: ++replayId.current })
@@ -152,18 +163,43 @@ export default function PassageEditor({ job, item, compact, speed, onSpeedChange
     }
     setError('')
     setTiming([...timing.slice(0, index), { ...cue, text: left, end: split },
-      { id: nextCue.current++, text: right, start: split, end: cue.end }, ...timing.slice(index + 1)])
+      { id: nextCue.current++, text: right, start: split, end: cue.end, needsConfirmation: cue.needsConfirmation },
+      ...timing.slice(index + 1)])
   }
 
   function mergeCue(index: number) {
     if (!timing || !timing[index + 1]) return
     const [left, right] = timing.slice(index, index + 2)
     setError('')
-    setTiming([...timing.slice(0, index), { ...left, text: `${left.text}\n${right.text}`, end: right.end },
+    setTiming([...timing.slice(0, index), { ...left, text: `${left.text}\n${right.text}`, end: right.end,
+      needsConfirmation: left.needsConfirmation || right.needsConfirmation },
       ...timing.slice(index + 2)])
   }
 
-  async function save(next: boolean) {
+  function saveError(problem: unknown) {
+    if (problem instanceof ApiError && problem.status === 409) {
+      setStale(true)
+      setError(t('stale'))
+    } else {
+      setError(problem instanceof Error ? problem.message : String(problem))
+    }
+  }
+
+  async function confirmIssue(issue: Issue) {
+    if (!job.revision || busy || stale) return
+    setError('')
+    onBusy(true)
+    try {
+      const updated = await api.save(job.id, item.id, { resolved_issues: [issue.id], revision: job.revision })
+      await onSave(updated, false)
+    } catch (problem) {
+      saveError(problem)
+    } finally {
+      onBusy(false)
+    }
+  }
+
+  async function save(next: boolean, repairAfterSave = false) {
     if (!job.revision || saveDisabled) return
     if (!dirty && item.human_reviewed) {
       onBusy(true)
@@ -211,14 +247,13 @@ export default function PassageEditor({ job, item, compact, speed, onSpeedChange
       setChoice('suggestion')
       setTiming(null)
       onDirty(false)
+      const template = updated.passage.timing_template
+      if (repairAfterSave || (!timing && template?.length && wording !== item.selected_text)) {
+        showTiming(updated.passage.selected_text, template?.length ? template : updated.passage.timings ?? [])
+      }
       await onSave(updated, next)
     } catch (problem) {
-      if (problem instanceof ApiError && problem.status === 409) {
-        setStale(true)
-        setError(t('stale'))
-      } else {
-        setError(problem instanceof Error ? problem.message : String(problem))
-      }
+      saveError(problem)
     } finally {
       onBusy(false)
     }
@@ -240,14 +275,19 @@ export default function PassageEditor({ job, item, compact, speed, onSpeedChange
       {item.issues.length > 0 && (
         <section className="review-note" aria-label={t('reason')}>
           <ul>
-            {item.issues.map((issue, i) => {
+            {item.issues.map((issue) => {
               const range = clip ? issueRange(issue, clip) : undefined
-              return <li key={`${issue.reason}-${i}`}>
+              return <li key={issue.id}>
                 <span className="issue-copy"><strong>{t(issue.category)}</strong> · {issueDescription(issue.reason, t) ?? issue.detail}</span>
-                {clip && <button type="button" className="button secondary issue-replay" disabled={!ready}
-                  onClick={() => replayRange(range ?? clip)}>
-                  <Play size={14} aria-hidden="true" />{t(range ? 'issueReplay' : 'passageReplay')}
-                </button>}
+                <div className="issue-actions">
+                  {clip && <button type="button" className="button secondary issue-replay" disabled={!ready}
+                    onClick={() => replayRange(range ?? clip)}>
+                    <Play size={14} aria-hidden="true" />{t(range ? 'issueReplay' : 'passageReplay')}
+                  </button>}
+                  {(issue.category === 'coverage' || issue.category === 'seam') &&
+                    <button type="button" className="button secondary issue-replay" disabled={!ready || busy || stale}
+                      onClick={() => { void confirmIssue(issue) }}>{t('issueConfirm')}</button>}
+                </div>
               </li>
             })}
           </ul>
@@ -268,7 +308,7 @@ export default function PassageEditor({ job, item, compact, speed, onSpeedChange
               <p>{t('timingHint')}</p>
               {timing.map((cue, i) => (
                 <fieldset className="timing-cue" key={cue.id}>
-                  <legend>{t('cue')} {i + 1}</legend>
+                  <legend>{t('cue')} {i + 1}{cue.needsConfirmation && ` · ${t('timingNeedsConfirmation')}`}</legend>
                   <label className="sr-only" htmlFor={`cue-${cue.id}`}>{t('accepted')}</label>
                   <textarea id={`cue-${cue.id}`} lang="zh-CN" value={cue.text} rows={2}
                     onChange={(e) => updateCue(cue.id, 'text', e.target.value)} disabled={busy} />
@@ -358,7 +398,7 @@ export default function PassageEditor({ job, item, compact, speed, onSpeedChange
                     {text ? highlighted(text, item.candidate_spans?.[source] ?? [])
                       : source === 'openai' && item.unplaced_openai ? (
                         <><p className="small muted">{t('unplacedOpenai')}</p><span lang="zh-CN">{item.unplaced_openai}</span></>
-                      ) : t('noText')}
+                      ) : t(source === 'openai' && item.comparison_skipped ? 'comparisonSkipped' : 'noText')}
                   </div>
                   {text && <button type="button" className="source-use" aria-pressed={choice === source}
                     onClick={() => choose(source, text)} disabled={busy}>{t('useSource')} <ChevronRight size={14} aria-hidden="true" /></button>}

@@ -4,9 +4,10 @@ export const sources = ['gemini', 'openai'] as const
 export type Source = (typeof sources)[number]
 export type Choice = Source | 'suggestion' | 'edited' | 'inaudible' | 'no_speech'
 export type Timing = { text: string; start_ms: number; end_ms: number }
+export type TimingTemplate = { text: string; start_ms: number | null; end_ms: number | null; needs_confirmation: boolean }
 export type Category = 'wording' | 'coverage' | 'timing' | 'seam'
 export type Filter = 'all' | 'flagged' | Category
-export type Issue = { category: Category; reason: string; detail: string; start_sample?: number; end_sample?: number }
+export type Issue = { id: string; category: Category; reason: string; detail: string; start_sample?: number; end_sample?: number }
 export type Passage = {
   id: string
   start_seconds: number
@@ -18,7 +19,9 @@ export type Passage = {
   selected_text: string
   suggested_text: string
   unplaced_openai?: string | null
+  comparison_skipped?: boolean
   timings?: Timing[]
+  timing_template?: TimingTemplate[]
   human_reviewed?: boolean
 }
 export type Status = 'uploading' | 'queued' | 'processing' | 'needs_review' | 'ready_to_publish' |
@@ -47,7 +50,7 @@ type Page<T, K extends string> = Record<K, T[]> & { next_cursor: string | null }
 export type ReviewPage = Page<Passage, 'passages'> & { revision: string | null }
 export type SavedReview = { job: Job; passage: Passage }
 type UploadCredentials = { endpoint: string; bucket: string; object_key: string; token: string }
-type Decision = { choice: Choice; text?: string; timings?: Timing[]; revision: string }
+type Decision = { choice?: Choice; text?: string; timings?: Timing[]; resolved_issues?: string[]; revision: string }
 export type Artifact = 'txt' | 'srt'
 
 export class ApiError extends Error {

@@ -17,7 +17,7 @@ from subtitle_workflow import make_manifest, preflight
 from workflow_cloud import BudgetExceeded, CloudError, RateLimited, RequestPending
 from workflow_gemini import GeminiClient
 from workflow_openai import OpenAIClient
-from workflow_pipeline import build_review, transcribe
+from workflow_pipeline import LEGACY_PIPELINE_VERSION, build_review, transcribe
 
 
 LOG = logging.getLogger("studio.worker")
@@ -87,6 +87,8 @@ def _process(store, supabase, job, daily_budget):
         supabase.download(f"{prefix}/source", source, job["source_bytes"])
         manifest = make_manifest(source, vocabulary=job["terms"])
         manifest.pop("source")
+        if (job.get("manifest") or {}).get("pipeline") == LEGACY_PIPELINE_VERSION:
+            manifest["pipeline"] = LEGACY_PIPELINE_VERSION
         store.pin_manifest(job_id, lease, manifest)
         windows = directory / "windows"
         windows.mkdir()
