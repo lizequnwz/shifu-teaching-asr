@@ -51,7 +51,7 @@ For batch ingestion, run `scripts/subtitle_workflow.py batch MANIFEST.jsonl`. Ea
 The [Render Blueprint](render.yaml) combines a free web service with a paid background worker. The web service can have a cold start after inactivity. Supabase Free works for the pilot. Online recordings are limited to 50 MB (50,000,000 bytes) and 120 minutes. Budget separately for the worker, speech APIs, and any SMTP costs.
 
 1. In Supabase, create a private Storage bucket named `recordings`. Allow 50 MB in both the project Storage settings and the bucket. Apply [the schema](migrations/001_online.sql) in the Supabase SQL Editor before deploying the web service. The worker also applies the schema in its predeploy step.
-2. Enable email authentication. Add `{{ .Token }}` to the Magic Link or OTP template and restrict registration to invited or pre-created confirmed accounts for the pilot. Configure custom SMTP before inviting users outside your Supabase project team. Set the Site URL and allowed redirect to the final Studio HTTPS origin.
+2. Enable email authentication and restrict registration to invited or pre-created confirmed accounts for the pilot. Supabase's default mailer sends a sign-in link to project team members. Configure custom SMTP before inviting users outside that team. If you want users to enter a code, add `{{ .Token }}` to the Magic Link or OTP template. Set the Site URL and allowed redirect to the final Studio HTTPS origin.
 3. In Render, create the workspace environment group `subtitle-studio-online` and populate it with the shared values below. Create a Blueprint from this repository and set the speech keys on the worker. Confirm the actual web URL in `STUDIO_PUBLIC_ORIGIN`, then check `/health` and run a short authorized upload through review and download.
 
 | Variable | Where to set it |
@@ -65,6 +65,8 @@ The [Render Blueprint](render.yaml) combines a free web service with a paid back
 | `GEMINI_API_KEY`, `OPENAI_API_KEY` | Worker only. Use a paid Gemini project verified for this launch. |
 
 Enter credentials in the Render and Supabase dashboards. Keep passwords, API keys, and local `.env` files out of Git. Each account can process 120 minutes in a rolling 30-day period. Jobs and exports expire 30 days after creation. Verify account isolation, email delivery, and resumable uploads before widening access. See [Supabase Storage limits](https://supabase.com/docs/guides/storage/uploads/file-limits), [Supabase SMTP](https://supabase.com/docs/guides/auth/auth-smtp), [Gemini regions](https://aistudio.google.com/docs/available-regions), and [OpenAI regions](https://developers.openai.com/api/docs/supported-countries).
+
+For a pilot without hosting charges, create only a **Free Docker Web Service** in Render using this repository. Use `/health` for its health check and set the shared configuration on the service. Run `scripts/online_worker.py` with the local Python environment and the same settings on your Mac. The worker can read the speech keys from the local `.env`. Jobs stay queued when the Mac is offline. Speech API usage is billed separately.
 
 ## Verify and measure release quality
 

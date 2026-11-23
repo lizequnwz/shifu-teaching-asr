@@ -109,7 +109,7 @@ export default function Account({ config, t, lang, children }: Props) {
         )}
         {error && <p className="error-text" role="alert">{error}</p>}
         <button type="submit" className="button primary" disabled={busy}>
-          {t(needsProfile ? 'continue' : codeSent ? 'verifyCode' : 'sendCode')}
+          {t(needsProfile ? 'continue' : codeSent ? 'verifyCode' : 'sendSignInEmail')}
         </button>
         {needsProfile ? (
           <button type="button" className="text-button" onClick={() => void signOut().catch((e) => setError(e.message))}>{t('signOut')}</button>
