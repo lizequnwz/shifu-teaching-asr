@@ -13,22 +13,20 @@ Transcription uses Gemini and OpenAI APIs exclusively. There is no MLX, Qwen, Wh
 
 ## Run locally
 
-Install FFmpeg, Python 3.12, Node.js 22 or newer, and uv. From the checkout root:
+Install FFmpeg, Python 3.12, Node.js 22 or newer, and uv. Set `GEMINI_API_KEY` and `OPENAI_API_KEY` in your shell or in the project’s local `.env`. Keep that file private.
 
-Use a fresh virtual environment when upgrading from the former local-model setup. Install only the requirements below; no model checkout or model cache is needed. Node.js is needed to build the frontend, not to run the built app.
+From the checkout root, run the local launcher.
 
 ```sh
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python -r requirements-workflow.txt -r requirements-web.txt
-npm --prefix web ci
-npm --prefix web run build
+bash scripts/start_local.sh
 ```
 
-Set `GEMINI_API_KEY` and `OPENAI_API_KEY` in your shell or in the project’s local `.env`. Keep that file private. The preflight checks the tools, imports, and key presence without sending audio.
+The launcher creates `.venv` if needed, installs the Python and frontend dependencies, builds the frontend, and starts the server. Use a fresh virtual environment when upgrading from the former local-model setup.
+
+The preflight checks the tools, imports, and key presence without sending audio.
 
 ```sh
 .venv/bin/python scripts/subtitle_workflow.py preflight --cloud
-.venv/bin/python scripts/subtitle_web.py
 ```
 
 Open [the local workspace](http://127.0.0.1:8765/). It accepts recordings up to 120 minutes and 512 MiB. You can provide up to 100 confirmed terms, one per line. Local jobs live under `output/jobs/`. Keep the server running while processing. Restarting it resumes queued or interrupted jobs from checkpoints.
